@@ -1,0 +1,40 @@
+{
+  "main": "index.html",
+  "preload": "preload/services.js",
+  "logo": "logo.png",
+  "development": {
+    "main": "http://localhost:5173"
+  },
+  "features": [
+    {
+      "code": "tv-search",
+      "explain": "搜索影视",
+      "cmds": [
+        "影视",
+        "搜剧",
+        "搜片",
+        "找剧",
+        "找片"
+      ]
+    },
+    {
+      "code": "tv-history",
+      "explain": "观看历史",
+      "cmds": [
+        "追剧",
+        "历史",
+        "记录",
+        "继续看"
+      ]
+    },
+    {
+      "code": "tv-settings",
+      "explain": "影视设置",
+      "cmds": [
+        "影视设置",
+        "视频设置",
+        "站点设置"
+      ]
+    }
+  ]
+}
