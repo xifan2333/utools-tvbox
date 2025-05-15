@@ -1,6 +1,5 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue';
-import { useToast } from './plugins/toast';
 import Sidebar from './components/Sidebar.vue';
 
 const isDark = ref(false)

@@ -1,11 +1,11 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useToast } from '../plugins/toast'
-import Player from '../components/Player/index.vue'
 
 const route = useRoute()
-const { toast } = useToast()
+
+const toast = useToast()
 
 const currentEpisode = ref('')
 const episodes = ref([])
@@ -13,125 +13,237 @@ const loading = ref(true)
 const currentEpisodeIndex = ref(0)
 const videoInfo = ref(null)
 
+const searchResults = ref([])
 
 
-// 获取视频信息
+
+// 添加计算属性处理 iframe src
+const iframeSrc = computed(() => {
+  if (!currentEpisode.value) {
+    return window.services.parseApi.getParseApi()
+  }
+  return currentEpisode.value
+})
+
+// 选集/换源相关状态
+const lastTime = ref(0)
+
+const isFullscreen = ref(false)
+const wrapperRef = ref(null)
+
+const showEpisodePopover = ref(false)
+const showSourcePopover = ref(false)
+
+// 全屏切换（使用原生全屏API）
+const toggleFullscreen = async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await wrapperRef.value.requestFullscreen()
+    } else {
+      await document.exitFullscreen()
+    }
+  } catch (err) {
+    toast.error('全屏切换失败')
+  }
+}
+
+// 监听全屏状态变化
+const handleFullscreenChange = () => {
+  isFullscreen.value = !!document.fullscreenElement
+}
+
+// 获取视频信息和历史恢复
 const fetchVideoInfo = async () => {
   try {
     const id = route.params.id
-    // 优先使用 query 里的分集信息
-    let episodesArr = []
-    if (route.query.episodes) {
-      try {
-        episodesArr = JSON.parse(route.query.episodes)
-        if (!Array.isArray(episodesArr) || episodesArr.length === 0) {
-          throw new Error('无效的分集信息')
-        }
-      } catch (e) {
-        console.error('解析分集信息失败:', e)
-        if (toast && toast.error) toast.error('获取视频信息失败')
-        return
-      }
-    } else {
-      const detail = await window.services.video.getDetail(id, route.query.sourceId)
-      episodesArr = detail.episodes || []
-    }
-    
-    if (episodesArr.length > 0) {
-      episodes.value = episodesArr
-      // 如果有指定的分集索引，使用指定的分集
-      const episodeIndex = route.query.currentEpisodeIndex ? parseInt(route.query.currentEpisodeIndex) : 0
-      if (episodeIndex >= episodesArr.length) {
-        console.error('分集索引超出范围')
-        if (toast && toast.error) toast.error('分集信息错误')
-        return
-      }
-      
-      currentEpisode.value = episodesArr[episodeIndex]
-      currentEpisodeIndex.value = episodeIndex
-      
-      // 保存视频信息到历史记录，包含分集列表和当前分集
-      const pureVideoInfo = {
-        vod_id: route.query.vod_id || id,
+    // 1. 恢复历史
+    if (route.query.from === 'history') {
+      currentEpisodeIndex.value = Number(route.query.episodeIndex) || 0
+      currentEpisode.value = route.query.episodeUrl || ''
+      lastTime.value = Number(route.query.lastTime) || 0
+      videoInfo.value = {
+        vod_id: route.query.vod_id,
         vod_name: route.query.title,
-        vod_remarks: route.query.vod_remarks || '',
-        vod_play_from: route.query.vod_play_from || '',
-        type_id: route.query.type_id || '',
-        type_name: route.query.type_name || '',
-        episodes: episodesArr.map(episode => String(episode)), // 确保所有分集都是字符串
-        currentEpisodeIndex: episodeIndex,
-        currentEpisode: String(episodesArr[episodeIndex]), // 确保当前分集是字符串
-        currentTime: route.query.time ? parseFloat(route.query.time) : 0,
-        duration: route.query.duration ? parseFloat(route.query.duration) : 0
+        sourceId: route.query.sourceId,
+        sourceName: route.query.sourceName,
+        platform: route.query.platform || '',
+        episodeIndex: currentEpisodeIndex.value,
+        episodeUrl: currentEpisode.value
       }
-      videoInfo.value = pureVideoInfo
-      window.services.history.addHistory(pureVideoInfo)
-    } else {
-      if (toast && toast.error) toast.error('获取视频信息失败')
+      // 获取可用源列表
+      await fetchSourceList(route.query.title)
+      loading.value = false
+      return
     }
-  } catch (error) {
-    console.error('获取视频信息失败:', error)
-    if (toast && toast.error) toast.error('获取视频信息失败，请稍后重试')
+    // 2. 正常搜索/播放
+    // 先获取详情，提取分集
+    const detail = await window.services.video.getDetail(id, route.query.sourceId)
+    episodes.value = detail.episodes || []
+    currentEpisodeIndex.value = 0
+    currentEpisode.value = episodes.value[0] || ''
+    videoInfo.value = {
+      vod_id: id,
+      vod_name: route.query.title,
+      sourceId: route.query.sourceId,
+      sourceName: route.query.sourceName,
+      platform: detail.platform || '',
+      episodeIndex: 0,
+      episodeUrl: currentEpisode.value
+    }
+    await fetchSourceList(route.query.title)
+    // 自动添加第一集历史记录
+    window.services.history.addHistory({
+      ...videoInfo.value,
+      lastTime: lastTime.value
+    })
+  } catch (e) {
+    toast.error('获取视频信息失败')
   } finally {
     loading.value = false
   }
 }
 
-// 切换剧集
-const switchEpisode = (index) => {
-  currentEpisode.value = episodes.value[index]
-  currentEpisodeIndex.value = index
-  // 更新历史记录中的分集信息
-  if (videoInfo.value) {
-    const pureVideoInfo = {
-      ...videoInfo.value,
-      currentEpisodeIndex: index,
-      currentEpisode: String(episodes.value[index]), // 确保当前分集是字符串
-      currentTime: 0,
-      episodes: episodes.value.map(episode => String(episode)) // 确保所有分集都是字符串
+// 获取可用源列表（复用Search逻辑）
+const fetchSourceList = async (title) => {
+  const result = await window.services.video.search(title)
+  searchResults.value = result.list || []
+}
+
+
+
+// 选集切换
+const selectEpisode = (idx) => {
+  currentEpisodeIndex.value = idx
+  currentEpisode.value = episodes.value[idx]
+  videoInfo.value.episodeIndex = idx
+  videoInfo.value.episodeUrl = currentEpisode.value
+  // 记录历史
+  window.services.history.addHistory({
+    ...videoInfo.value,
+    lastTime: lastTime.value
+  })
+}
+
+// 换源切换
+const switchSource = async (item) => {
+  loading.value = true
+  try {
+    // 获取新源详情
+    const detail = await window.services.video.getDetail(item.vod_id, item.sourceId)
+    episodes.value = detail.episodes || []
+    currentEpisodeIndex.value = 0
+    currentEpisode.value = episodes.value[0] || ''
+    videoInfo.value = {
+      vod_id: item.vod_id,
+      vod_name: item.vod_name,
+      sourceId: item.sourceId,
+      sourceName: item.sourceName,
+      platform: detail.platform || '',
+      episodeIndex: 0,
+      episodeUrl: currentEpisode.value
     }
-    videoInfo.value = pureVideoInfo
-    window.services.history.addHistory(pureVideoInfo)
+    // 记录历史
+    window.services.history.addHistory({
+      ...videoInfo.value,
+      lastTime: 0 // 换源后重置进度
+    })
+  } catch (e) {
+    toast.error('切换源失败')
+  } finally {
+    loading.value = false
   }
 }
 
-// 更新播放进度
-const updateProgress = (currentTime, currentEpisodeIndex) => {
-  if (videoInfo.value) {
-    window.services.history.updateProgress(
-      videoInfo.value.vod_id,
-      currentTime,
-      currentEpisodeIndex,
-      episodes.value[currentEpisodeIndex]
-    )
+// 点击空白处关闭弹窗
+const handleClickOutside = (e) => {
+  if (
+    !e.target.closest('.episode-popover') &&
+    !e.target.closest('.source-popover') &&
+    !e.target.closest('.episode-btn') &&
+    !e.target.closest('.source-btn')
+  ) {
+    showEpisodePopover.value = false
+    showSourcePopover.value = false
   }
 }
 
 onMounted(async () => {
   await fetchVideoInfo()
+  document.addEventListener('click', handleClickOutside)
+  document.addEventListener('fullscreenchange', handleFullscreenChange)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleClickOutside)
+  document.removeEventListener('fullscreenchange', handleFullscreenChange)
 })
 </script>
 
 <template>
-  <div class="container mx-auto px-4 py-8">
-    <!-- 加载状态 -->
-    <div v-if="loading" class="flex justify-center items-center h-96">
-      <div class="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
-    </div>
-
-    <!-- 播放器区域 -->
-    <div v-else class="space-y-8">
+  <div id="player">
+    <div ref="wrapperRef"
+      class="player-fullscreen-wrapper flex flex-col w-full max-w-5xl mx-auto rounded-lg bg-black opacity-90 shadow-lg overflow-hidden"
+      :class="isFullscreen ? 'fixed inset-0 z-100 w-screen h-screen max-w-none' : ''">
       <!-- 视频播放器 -->
-      <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-        <Player
-          :src="currentEpisode"
-          :episodes="episodes"
-          :current-index="currentEpisodeIndex"
-          :initial-time="route.query.time ? parseFloat(route.query.time) : 0"
-          @update:current-index="switchEpisode"
-          @progress="updateProgress"
-        />
+      <div class="w-full aspect-video relative flex-shrink-0 flex-1">
+        <iframe :src="iframeSrc" class="w-full h-full absolute left-0 top-0 z-0" frameborder="0" allowfullscreen></iframe>
+      </div>
+      <!-- 控制栏紧贴视频区域下方 -->
+      <div class="flex justify-center p-0 flex-shrink-0">
+        <div
+          class="bg-black bg-opacity-60 rounded-full p-0 shadow-lg flex items-center w-full max-w-[320px] min-w-[180px] overflow-hidden">
+          <!-- 选集按钮 -->
+          <button
+            class="episode-btn flex-1 h-12 rounded-none flex items-center justify-center text-white hover:bg-black/80 transition bg-transparent min-w-0"
+            aria-label="选集" @click.stop="showEpisodePopover = !showEpisodePopover; showSourcePopover = false">
+            <i class="i-ri-list-unordered text-2xl"></i>
+          </button>
+          <!-- 换源按钮 -->
+          <button
+            class="source-btn flex-1 h-12 rounded-none flex items-center justify-center text-white hover:bg-black/80 transition bg-transparent min-w-0 border-l border-white/10"
+            aria-label="换源" @click.stop="showSourcePopover = !showSourcePopover; showEpisodePopover = false">
+            <i class="i-ri-global-line text-2xl"></i>
+          </button>
+          <!-- 全屏按钮 -->
+          <button @click="toggleFullscreen"
+            class="flex-1 h-12 rounded-none flex items-center justify-center text-white hover:bg-black/80 transition bg-transparent min-w-0 border-l border-white/10"
+            aria-label="全屏">
+            <i :class="isFullscreen ? 'i-ri-fullscreen-exit-line' : 'i-ri-fullscreen-line'" class="text-2xl"></i>
+          </button>
+        </div>
+      </div>
+      <!-- 选集弹出层 -->
+      <div v-if="showEpisodePopover"
+        class="episode-popover absolute bottom-24 left-1/2 -translate-x-1/2 z-140 bg-black bg-opacity-80 rounded-lg shadow-lg p-4 min-w-56 max-h-80 overflow-y-auto transition-opacity scroll-bar">
+        <div class="text-white font-bold mb-2">选集</div>
+        <button v-for="(ep, idx) in episodes" :key="idx" @click="selectEpisode(idx); showEpisodePopover = false" :class="[
+          'w-full text-left px-4 py-2 rounded mb-1 bg-transparent',
+          idx === currentEpisodeIndex ? 'bg-blue-600 text-white font-bold' : 'hover:bg-blue-700 text-white'
+        ]">
+          第{{ idx + 1 }}集
+        </button>
+      </div>
+      <!-- 换源弹出层 -->
+      <div v-if="showSourcePopover"
+        class="source-popover absolute bottom-24 left-1/2 -translate-x-1/2 z-140 bg-black bg-opacity-80 rounded-lg shadow-lg p-4 min-w-56 max-h-80 overflow-y-auto transition-opacity">
+        <div class="text-white font-bold mb-2">换源</div>
+        <div v-for="item in searchResults" :key="item.vod_id + '-' + item.sourceId"
+          @click="switchSource(item); showSourcePopover = false" :class="[
+            'w-full text-left px-4 py-2 rounded mb-1 flex items-center gap-2',
+            item.vod_id === videoInfo?.vod_id && item.sourceId === videoInfo?.sourceId
+              ? 'bg-blue-600 text-white font-bold' : 'hover:bg-blue-700 text-white'
+          ]">
+          <span class="truncate max-w-[120px]">{{ item.vod_name }}</span>
+          <span class="text-xs px-2 py-1 bg-gray-900 text-gray-300 rounded">{{ item.sourceName }}</span>
+          <span v-if="item.platform" class="text-xs px-2 py-1 bg-green-900 text-green-300 rounded">{{ item.platform
+            }}</span>
+        </div>
       </div>
     </div>
   </div>
-</template> 
+</template>
+<style scoped>
+.scroll-bar::-webkit-scrollbar {
+  display: none;
+}
+</style>

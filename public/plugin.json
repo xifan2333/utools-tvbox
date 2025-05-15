@@ -2,14 +2,15 @@
   "main": "index.html",
   "preload": "preload/services.js",
   "logo": "logo.png",
-  "development": {
-    "main": "http://localhost:5173"
-  },
   "features": [
     {
       "code": "tv-search",
       "explain": "搜索影视",
       "cmds": [
+        {
+          "type": "over",
+          "label": "搜索影视"
+        },
         "影视",
         "搜剧",
         "搜片",

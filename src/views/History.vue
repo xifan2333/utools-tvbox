@@ -19,49 +19,45 @@
     <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
       <div
         v-for="history in histories"
-        :key="history.id"
+        :key="history.vod_id + '-' + history.sourceId"
         class="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden group"
       >
         <!-- 视频信息卡片 -->
         <div class="p-4">
-          <h3 class="text-lg font-medium text-gray-800 dark:text-gray-200 mb-2 line-clamp-2">
-            {{ history.vod_name }}
-          </h3>
+          <div class="flex justify-between items-center mb-2">
+            <h3 class="text-lg font-medium text-gray-800 dark:text-gray-200 line-clamp-2">
+              {{ history.vod_name }}
+              <span v-if="history.platform && history.platform !== ''" class="text-xs px-2 py-1 bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-300 rounded ml-2">{{ history.platform }}</span>
+            </h3>
+            <span v-if="history.sourceName" class="text-sm text-gray-500 dark:text-gray-400 ml-4 whitespace-nowrap flex items-center">
+              <i class="i-ri-global-line mr-1"></i>
+              {{ history.sourceName }}
+            </span>
+          </div>
           <p v-if="history.vod_remarks" class="text-sm text-gray-500 dark:text-gray-400 mb-3">
             {{ history.vod_remarks }}
           </p>
-          
-          <!-- 进度条 -->
-          <div class="h-1 bg-gray-200 dark:bg-gray-700 rounded-full mb-3">
-            <div
-              class="h-full bg-blue-500 rounded-full"
-              :style="{ width: `${((history.currentEpisodeIndex + 1) / history.episodes.length) * 100}%` }"
-            ></div>
+          <!-- 进度提示 -->
+          <div v-if="history.lastTime > 0" class="text-xs text-blue-600 dark:text-blue-300 mb-2">上次看到 {{ formatTime(history.lastTime) }}</div>
+          <div class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400 mb-2">
+            <span>第 {{ (history.episodeIndex || 0) + 1 }} 集</span>
           </div>
-
-          <!-- 底部信息 -->
-          <div class="flex justify-between items-center text-sm text-gray-500 dark:text-gray-400">
-            <div class="flex items-center space-x-2">
-              <span>{{ formatTime(history.currentTime) }}</span>
-              <span class="text-gray-400">|</span>
-              <span>第 {{ history.currentEpisodeIndex + 1 }}/{{ history.episodes.length }} 集</span>
-            </div>
-            <div class="flex gap-2">
-              <button
-                class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-                @click="continueWatching(history)"
-              >
-                <i class="i-ri-play-circle-line"></i>
-                继续观看
-              </button>
-              <button
-                class="px-3 py-1 text-white hover:bg-red-600 transition-colors bg-red-500 rounded-md"
-                @click="removeHistory(history.vod_id)"
-              >
-                <i class="i-ri-delete-bin-2-line"></i>
-                删除
-              </button>
-            </div>
+          <!-- 底部按钮 -->
+          <div class="flex justify-end gap-2 mt-2">
+            <button
+              class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+              @click="continueWatching(history)"
+            >
+              <i class="i-ri-play-circle-line"></i>
+              继续观看
+            </button>
+            <button
+              class="px-3 py-1 text-white hover:bg-red-600 transition-colors bg-red-500 rounded-md"
+              @click="removeHistory(history.vod_id, history.sourceId)"
+            >
+              <i class="i-ri-delete-bin-2-line"></i>
+              删除
+            </button>
           </div>
         </div>
       </div>
@@ -72,8 +68,13 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useDialog } from '../plugins/dialog'
+import { useToast } from '../plugins/toast'
 
 const router = useRouter()
+const dialog = useDialog()
+const toast = useToast()
+
 const histories = ref([])
 
 // 获取历史记录
@@ -83,47 +84,63 @@ const loadHistories = () => {
 
 // 继续观看
 const continueWatching = (history) => {
-  if (!history.episodes || history.episodes.length === 0) {
-    console.error('无效的分集信息')
-    return
-  }
-  
   router.push({
     path: `/player/${history.vod_id}`,
     query: {
       title: history.vod_name,
       vod_id: history.vod_id,
-      vod_remarks: history.vod_remarks,
-      vod_play_from: history.vod_play_from,
-      type_id: history.type_id,
-      type_name: history.type_name,
-      episodes: JSON.stringify(history.episodes),
-      currentEpisodeIndex: history.currentEpisodeIndex || 0,
-      time: history.currentTime || 0
+      sourceId: history.sourceId,
+      sourceName: history.sourceName,
+      platform: history.platform,
+      episodeIndex: history.episodeIndex,
+      episodeUrl: history.episodeUrl,
+      lastTime: history.lastTime,
+      from: 'history'
     }
   })
 }
 
 // 删除历史记录
-const removeHistory = (id) => {
-  window.services.history.removeHistory(id)
-  loadHistories()
+const removeHistory = async (vod_id, sourceId) => {
+  try {
+    const confirmed = await dialog.confirm(
+      '删除历史记录',
+      '确定要删除这条观看历史吗？',
+      () => {
+        window.services.history.removeHistory(vod_id, sourceId)
+        loadHistories()
+      }
+    )
+  } catch (error) {
+    toast.error(error?.message || '删除历史记录失败')
+  }
 }
 
 // 清空历史记录
-const clearHistories = () => {
-  if (confirm('确定要清空所有观看历史吗？')) {
-    window.services.history.clearHistories()
-    loadHistories()
+const clearHistories = async () => {
+  try {
+    const confirmed = await dialog.confirm(
+      '清空历史记录',
+      '确定要清空所有观看历史吗？此操作不可恢复。',
+      () => {
+        window.services.history.clearHistories()
+        loadHistories()
+      }
+    )
+  } catch (error) {
+    toast.error(error?.message || '清空历史记录失败')
   }
 }
 
 // 格式化时间
 const formatTime = (seconds) => {
   if (!seconds) return '00:00'
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = Math.floor(seconds % 60)
-  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  return h > 0
+    ? `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+    : `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
 onMounted(() => {

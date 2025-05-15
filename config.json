@@ -1,0 +1,61 @@
+{
+  "parse": "https://jx.xmflv.com/?url=",
+  "sources": [
+    {
+      "id": "zyhls",
+      "name": "🦐 虾米",
+      "api": "https://zy.hls.one",
+      "detail": "https://zy.hls.one/vod",
+      "enabled": true,
+      "isOfficial": true
+    },
+    {
+      "id": "caiji",
+      "name": "7️⃣ 789",
+      "api": "https://www.caiji.cyou",
+      "detail": "https://www.caiji.cyou/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": true
+    },
+    {
+      "id": "xiaomaomi",
+      "name": "😺 小猫咪",
+      "api": "http://zy.xiaomaomi.cc",
+      "detail": "http://zy.xiaomaomi.cc/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": true
+    },
+    {
+      "id": "jisu",
+      "name": "⚡️ 极速",
+      "api": "https://jszyapi.com",
+      "detail": "https://jszyapi.com/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": false
+    },
+    {
+      "id": "heimuer",
+      "name": "🫐 黑莓",
+      "api": "https://json02.heimuer.xyz",
+      "detail": "https://www.heimuer.tv/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": false
+    },
+    {
+      "id": "feifan",
+      "name": "🌟 非凡",
+      "api": "https://api.ffzyapi.com",
+      "detail": "https://api.ffzyapi.com/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": false
+    },
+    {
+      "id": "baofeng",
+      "name": "🌪️ 暴风",
+      "api": "https://bfzyapi.com",
+      "detail": "https://bfzyapi.com/index.php/vod/detail/id",
+      "enabled": true,
+      "isOfficial": false
+    }
+  ]
+}
