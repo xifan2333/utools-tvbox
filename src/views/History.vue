@@ -38,7 +38,6 @@
             {{ history.vod_remarks }}
           </p>
           <!-- 进度提示 -->
-          <div v-if="history.lastTime > 0" class="text-xs text-blue-600 dark:text-blue-300 mb-2">上次看到 {{ formatTime(history.lastTime) }}</div>
           <div class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400 mb-2">
             <span>第 {{ (history.episodeIndex || 0) + 1 }} 集</span>
           </div>
@@ -94,8 +93,9 @@ const continueWatching = (history) => {
       platform: history.platform,
       episodeIndex: history.episodeIndex,
       episodeUrl: history.episodeUrl,
-      lastTime: history.lastTime,
-      from: 'history'
+      from: 'history',
+      keyword: history.keyword,
+      episodes: JSON.stringify(history.episodes || [])
     }
   })
 }

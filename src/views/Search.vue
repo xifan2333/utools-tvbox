@@ -174,7 +174,8 @@ const playVideo = (item) => {
       type_name: item.type_name,
       sourceId: item.sourceId,
       sourceName: item.sourceName,
-      from: 'search'
+      from: 'search',
+      keyword: searchQuery.value
     }
   })
 }

@@ -25,8 +25,7 @@ const iframeSrc = computed(() => {
   return currentEpisode.value
 })
 
-// 选集/换源相关状态
-const lastTime = ref(0)
+
 
 const isFullscreen = ref(false)
 const wrapperRef = ref(null)
@@ -60,7 +59,6 @@ const fetchVideoInfo = async () => {
     if (route.query.from === 'history') {
       currentEpisodeIndex.value = Number(route.query.episodeIndex) || 0
       currentEpisode.value = route.query.episodeUrl || ''
-      lastTime.value = Number(route.query.lastTime) || 0
       videoInfo.value = {
         vod_id: route.query.vod_id,
         vod_name: route.query.title,
@@ -68,10 +66,16 @@ const fetchVideoInfo = async () => {
         sourceName: route.query.sourceName,
         platform: route.query.platform || '',
         episodeIndex: currentEpisodeIndex.value,
-        episodeUrl: currentEpisode.value
+        episodeUrl: currentEpisode.value,
+        keyword: route.query.keyword,
+        episodes: route.query.episodes ? JSON.parse(route.query.episodes) : []
       }
-      // 获取可用源列表
-      await fetchSourceList(route.query.title)
+      // 恢复剧集列表
+      if (videoInfo.value.episodes && videoInfo.value.episodes.length > 0) {
+        episodes.value = videoInfo.value.episodes
+      } else {
+        await fetchSourceList()
+      }
       loading.value = false
       return
     }
@@ -88,14 +92,15 @@ const fetchVideoInfo = async () => {
       sourceName: route.query.sourceName,
       platform: detail.platform || '',
       episodeIndex: 0,
-      episodeUrl: currentEpisode.value
+      episodeUrl: currentEpisode.value,
+      keyword: route.query.keyword,
+      episodes: [] // 这里先空，addHistory时再处理
     }
-    await fetchSourceList(route.query.title)
+    await fetchSourceList()
     // 自动添加第一集历史记录
-    window.services.history.addHistory({
-      ...videoInfo.value,
-      lastTime: lastTime.value
-    })
+    const historyObj = { ...videoInfo.value, episodes: JSON.parse(JSON.stringify(episodes.value)) }
+    console.log('addHistory fetchVideoInfo', historyObj)
+    window.services.history.addHistory(historyObj)
   } catch (e) {
     toast.error('获取视频信息失败')
   } finally {
@@ -103,9 +108,11 @@ const fetchVideoInfo = async () => {
   }
 }
 
-// 获取可用源列表（复用Search逻辑）
-const fetchSourceList = async (title) => {
-  const result = await window.services.video.search(title)
+// 获取可用源列表（优先用用户原始搜索词）
+const fetchSourceList = async () => {
+  // 优先使用route.query.keyword（用户搜索词），否则用title
+  const keyword = route.query.keyword || route.query.title
+  const result = await window.services.video.search(keyword)
   searchResults.value = result.list || []
 }
 
@@ -118,10 +125,9 @@ const selectEpisode = (idx) => {
   videoInfo.value.episodeIndex = idx
   videoInfo.value.episodeUrl = currentEpisode.value
   // 记录历史
-  window.services.history.addHistory({
-    ...videoInfo.value,
-    lastTime: lastTime.value
-  })
+  const historyObj = { ...videoInfo.value, episodes: JSON.parse(JSON.stringify(episodes.value)) }
+  console.log('addHistory selectEpisode', historyObj)
+  window.services.history.addHistory(historyObj)
 }
 
 // 换源切换
@@ -131,23 +137,36 @@ const switchSource = async (item) => {
     // 获取新源详情
     const detail = await window.services.video.getDetail(item.vod_id, item.sourceId)
     episodes.value = detail.episodes || []
-    currentEpisodeIndex.value = 0
-    currentEpisode.value = episodes.value[0] || ''
+    // 记录当前正在播放的集数
+    const prevEpisodeIndex = currentEpisodeIndex.value
+    let targetIndex = 0
+    // 判断新源集数是否足够
+    if (episodes.value.length > prevEpisodeIndex) {
+      targetIndex = prevEpisodeIndex
+    } else {
+      // 新源集数不足，toast提示
+      toast.info('新源集数与原源不一致，已为您切换到第1集，请手动选择')
+      targetIndex = 0
+    }
+    currentEpisodeIndex.value = targetIndex
+    currentEpisode.value = episodes.value[targetIndex] || ''
     videoInfo.value = {
       vod_id: item.vod_id,
       vod_name: item.vod_name,
       sourceId: item.sourceId,
       sourceName: item.sourceName,
       platform: detail.platform || '',
-      episodeIndex: 0,
-      episodeUrl: currentEpisode.value
+      episodeIndex: targetIndex,
+      episodeUrl: currentEpisode.value,
+      keyword: route.query.keyword,
+      episodes: [] // 这里先空，addHistory时再处理
     }
     // 记录历史
-    window.services.history.addHistory({
-      ...videoInfo.value,
-      lastTime: 0 // 换源后重置进度
-    })
+    const historyObj = { ...videoInfo.value, episodes: JSON.parse(JSON.stringify(episodes.value)) }
+    console.log('addHistory switchSource', historyObj)
+    window.services.history.addHistory(historyObj)
   } catch (e) {
+    console.log(e)
     toast.error('切换源失败')
   } finally {
     loading.value = false

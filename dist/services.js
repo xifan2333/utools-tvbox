@@ -1,12 +1,226 @@
-const axios = require('axios')
-const fs = require('fs')
-const path = require('path')
-const http = axios.create({
-  timeout: 5 * 60 * 1000,
-  headers: {
-    'Content-Type': 'application/json'
+const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+
+// 原生 GET 请求工具函数
+function nativeHttpGet(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          data
+        });
+      });
+    });
+    req.on('error', reject);
+    if (options.timeout) {
+      req.setTimeout(options.timeout, () => {
+        req.abort();
+        reject(new Error('请求超时'));
+      });
+    }
+  });
+}
+
+// 监听 uTools 事件
+window.utools.onPluginEnter(({ code, type, payload }) => {
+  // 根据不同的功能代码跳转到不同的页面
+  switch (code) {
+    case 'tv-search':
+      if (type === 'over') {
+        // 当是直接输入剧名时，将关键词作为参数传递
+        window.location.hash = `/search?keyword=${encodeURIComponent(payload)}`
+      } else {
+        // 其他情况保持原有逻辑
+        window.location.hash = '/search'
+      }
+      break
+    case 'tv-history':
+      window.location.hash = '/history'
+      break
+    case 'tv-settings':
+      window.location.hash = '/settings'
+      break
   }
 })
+
+// 搜索单个源
+const searchSingleSource = async (source, query) => {
+  try {
+    const apiUrl = `${source.api}/api.php/provide/vod/?ac=list&wd=${encodeURIComponent(query || '')}`;
+    const response = await nativeHttpGet(apiUrl, { timeout: 5 * 60 * 1000 });
+    if (!response.data) {
+      throw new Error('API返回数据为空');
+    }
+    let data = response.data;
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data);
+      } catch (e) {
+        console.error('解析API响应JSON失败:', e);
+        throw new Error('API返回数据格式错误');
+      }
+    }
+    if (data.code === 1 && Array.isArray(data.list)) {
+      const items = data.list.map(item => ({
+        ...item,
+        sourceId: source.id,
+        sourceName: source.name,
+        isOfficial: !!source.isOfficial
+      }));
+      return {
+        code: 200,
+        msg: data.msg || '搜索成功',
+        list: items,
+        page: data.page,
+        pagecount: data.pagecount,
+        limit: data.limit,
+        total: data.total
+      };
+    } else {
+      throw new Error('API返回数据格式不正确');
+    }
+  } catch (error) {
+    console.error(`搜索源 ${source.name} 失败:`, error);
+    return {
+      code: 400,
+      msg: error.message || '搜索失败',
+      list: [],
+      sourceId: source.id
+    };
+  }
+};
+
+// 提取视频链接的通用方法
+const extractVideoLinks = (html) => {
+  const links = new Set()
+  const episodes = []
+
+  // 匹配所有可能的视频链接
+  const patterns = [
+    // m3u8 链接
+    /https?:\/\/[^"'\s]+?\.m3u8/g,
+    // 带前缀的链接
+    /\$https?:\/\/[^"'\s]+?\.m3u8/g,
+    // JSON格式的链接
+    /(?<="url":")(https?:\/\/[^"'\s]+?\.m3u8)(?=")/g,
+    /(?<='url':')(https?:\/\/[^"'\s]+?\.m3u8)(?=')/g,
+    // 其他可能的格式
+    /https?:\/\/[^"'\s]+?\/\d{8}\/\d+_[a-f0-9]+\/index\.m3u8/g
+  ]
+
+  // 使用所有模式匹配
+  patterns.forEach(pattern => {
+    const matches = html.matchAll(pattern) || []
+    for (const match of matches) {
+      // 清理链接
+      let cleanLink = match[0]
+      if (cleanLink.startsWith('$')) {
+        cleanLink = cleanLink.substring(1)
+      }
+      cleanLink = cleanLink.replace(/['"]/g, '')
+
+      // 如果是带集数的格式，提取集数
+      if (match[1] && match[2]) {
+        const episodeNumber = parseInt(match[1])
+        cleanLink = match[2]
+        episodes.push({
+          number: episodeNumber,
+          url: `${parseApiService.getParseApi()}${encodeURIComponent(cleanLink)}`
+        })
+      }
+
+      // 验证链接并转换为iframe链接
+      try {
+        const url = new URL(cleanLink)
+        if (url.protocol.startsWith('http') && cleanLink.endsWith('.m3u8')) {
+          links.add(`${parseApiService.getParseApi()}${encodeURIComponent(cleanLink)}`)
+        }
+      } catch (e) {
+        // 忽略无效的URL
+      }
+    }
+  })
+
+  // 如果有带集数的链接，按集数排序并返回URL数组
+  if (episodes.length > 0) {
+    episodes.sort((a, b) => a.number - b.number)
+    return episodes.map(ep => ep.url)
+  }
+
+  // 否则返回普通链接数组
+  return Array.from(links)
+}
+
+// 解析详情页
+const parseDetailPage = (html) => {
+  try {
+    // 按平台分组的播放地址
+    const platformUrls = {
+      youku: [],
+      iqiyi: [],
+      qq: [],
+      mgtv: [],
+      bilibili: []
+    }
+
+    // 各平台的正则表达式
+    const patterns = {
+      youku: /[^"'\s]+(https?:\/\/v\.youku\.com\/v_show\/[^"'\s]+\.html)/g,
+      iqiyi: /[^"'\s]+(https?:\/\/www\.iqiyi\.com\/v_[^"'\s]+\.html)/g,
+      qq: /[^"'\s]+(https?:\/\/v\.qq\.com\/x\/cover\/[^"'\s]+\.html)/g,
+      mgtv: /[^"'\s]+(https?:\/\/www\.mgtv\.com\/[^"'\s]+\.html)/g,
+      bilibili: /[^"'\s]+(https?:\/\/www\.bilibili\.com\/[^"'\s]+)/g
+    }
+
+    // 使用所有模式匹配
+    Object.entries(patterns).forEach(([platform, pattern]) => {
+      const matches = html.matchAll(pattern) || []
+      for (const match of matches) {
+        const url = match[1].trim()
+        if (!platformUrls[platform].includes(url)) {
+          platformUrls[platform].push(url)
+        }
+      }
+    })
+
+    // 转换为平台和分集数组格式
+    const platformEpisodes = Object.entries(platformUrls)
+      .filter(([_, urls]) => urls.length > 0)
+      .map(([platform, urls]) => ({
+        platform,
+        episodes: urls.map(url => `${parseApiService.getParseApi()}${encodeURIComponent(url)}`)
+      }))
+
+    if (platformEpisodes.length === 0) {
+      return {
+        code: 404,
+        msg: '未找到有效的播放地址',
+        urllist: []
+      }
+    }
+
+    return {
+      code: 200,
+      urllist: platformEpisodes
+    }
+  } catch (error) {
+    console.error('解析详情页失败:', error)
+    return {
+      code: 400,
+      msg: '解析详情页失败',
+      raw: html,
+      error: error.message,
+      urllist: []
+    }
+  }
+}
 
 // 解析接口管理
 const parseApiService = {
@@ -24,17 +238,6 @@ const parseApiService = {
   }
 }
 
-// 添加请求拦截器（可选）
-http.interceptors.request.use(
-  config => {
-    // 这里可以添加请求前的处理，比如显示加载状态
-    return config
-  },
-  error => {
-    return Promise.reject(error)
-  }
-)
-
 // 主题存储服务
 const themeService = {
   // 获取主题
@@ -49,7 +252,7 @@ const themeService = {
 
 const videoService = {
   // 初始化源列表
-  initSource: async () => {
+  initSource:() => {
     const sources = window.utools.dbStorage.getItem('sources')
     if (!sources) {
       window.utools.dbStorage.setItem('sources', [])
@@ -60,7 +263,7 @@ const videoService = {
     return window.utools.dbStorage.getItem('sources') || []
   },
   // 添加新源
-  addSource: async (source) => {
+  addSource: (source) => {
     const sources = window.utools.dbStorage.getItem('sources') || []
     sources.push(source)
     window.utools.dbStorage.setItem('sources', sources)
@@ -197,7 +400,7 @@ const videoService = {
 
       const detailUrl = `${source.detail}/${id}.html`
 
-      const response = await http.get(detailUrl)
+      const response = await nativeHttpGet(detailUrl, { timeout: 5 * 60 * 1000 })
       const html = response.data
 
       if (!html || typeof html !== 'string') {
@@ -256,7 +459,7 @@ const videoService = {
     }
   },
   // 导出站点配置
-  exportSources: async (includeDisabled = true) => {
+  exportSources: (includeDisabled = true) => {
     try {
       const sources = window.utools.dbStorage.getItem('sources') || []
       const exportData = {
@@ -274,7 +477,7 @@ const videoService = {
           { name: 'JSON', extensions: ['json'] }
         ]
       }
-      const result = await window.utools.showSaveDialog(options)
+      const result = window.utools.showSaveDialog(options)
       if (result.canceled) {
         return {
           code: 200,
@@ -379,7 +582,7 @@ const videoService = {
   },
 
   // 导入站点配置（自动根据api字段去重合并，无需模式）
-  importSources: async (filePath) => {
+  importSources: (filePath) => {
     try {
       if (!fs.existsSync(filePath)) {
         throw new Error('文件不存在: ' + filePath)
@@ -457,184 +660,6 @@ const videoService = {
   },
 }
 
-// 搜索单个源
-const searchSingleSource = async (source, query) => {
-  try {
-    const apiUrl = `${source.api}/api.php/provide/vod/?ac=list&wd=${encodeURIComponent(query || '')}`
-    const response = await http.get(apiUrl)
-
-    if (!response.data) {
-      throw new Error('API返回数据为空')
-    }
-
-    let data = response.data
-    if (typeof data === 'string') {
-      try {
-        data = JSON.parse(data)
-      } catch (e) {
-        console.error('解析API响应JSON失败:', e)
-        throw new Error('API返回数据格式错误')
-      }
-    }
-
-    // 检查返回的数据格式
-    if (data.code === 1 && Array.isArray(data.list)) {
-      // 为每个结果添加来源信息
-      const items = data.list.map(item => ({
-        ...item,
-        sourceId: source.id,
-        sourceName: source.name,
-        isOfficial: !!source.isOfficial
-      }))
-
-      return {
-        code: 200,
-        msg: data.msg || '搜索成功',
-        list: items,
-        page: data.page,
-        pagecount: data.pagecount,
-        limit: data.limit,
-        total: data.total
-      }
-    } else {
-      throw new Error('API返回数据格式不正确')
-    }
-  } catch (error) {
-    console.error(`搜索源 ${source.name} 失败:`, error)
-    return {
-      code: 400,
-      msg: error.message || '搜索失败',
-      list: [],
-      sourceId: source.id
-    }
-  }
-}
-
-// 提取视频链接的通用方法
-const extractVideoLinks = (html) => {
-  const links = new Set()
-  const episodes = []
-
-  // 匹配所有可能的视频链接
-  const patterns = [
-    // m3u8 链接
-    /https?:\/\/[^"'\s]+?\.m3u8/g,
-    // 带前缀的链接
-    /\$https?:\/\/[^"'\s]+?\.m3u8/g,
-    // JSON格式的链接
-    /(?<="url":")(https?:\/\/[^"'\s]+?\.m3u8)(?=")/g,
-    /(?<='url':')(https?:\/\/[^"'\s]+?\.m3u8)(?=')/g,
-    // 其他可能的格式
-    /https?:\/\/[^"'\s]+?\/\d{8}\/\d+_[a-f0-9]+\/index\.m3u8/g
-  ]
-
-  // 使用所有模式匹配
-  patterns.forEach(pattern => {
-    const matches = html.matchAll(pattern) || []
-    for (const match of matches) {
-      // 清理链接
-      let cleanLink = match[0]
-      if (cleanLink.startsWith('$')) {
-        cleanLink = cleanLink.substring(1)
-      }
-      cleanLink = cleanLink.replace(/['"]/g, '')
-
-      // 如果是带集数的格式，提取集数
-      if (match[1] && match[2]) {
-        const episodeNumber = parseInt(match[1])
-        cleanLink = match[2]
-        episodes.push({
-          number: episodeNumber,
-          url: `${parseApiService.getParseApi()}${encodeURIComponent(cleanLink)}`
-        })
-      }
-
-      // 验证链接并转换为iframe链接
-      try {
-        const url = new URL(cleanLink)
-        if (url.protocol.startsWith('http') && cleanLink.endsWith('.m3u8')) {
-          links.add(`${parseApiService.getParseApi()}${encodeURIComponent(cleanLink)}`)
-        }
-      } catch (e) {
-        // 忽略无效的URL
-      }
-    }
-  })
-
-  // 如果有带集数的链接，按集数排序并返回URL数组
-  if (episodes.length > 0) {
-    episodes.sort((a, b) => a.number - b.number)
-    return episodes.map(ep => ep.url)
-  }
-
-  // 否则返回普通链接数组
-  return Array.from(links)
-}
-
-// 解析详情页
-const parseDetailPage = async (html) => {
-  try {
-    // 按平台分组的播放地址
-    const platformUrls = {
-      youku: [],
-      iqiyi: [],
-      qq: [],
-      mgtv: [],
-      bilibili: []
-    }
-
-    // 各平台的正则表达式
-    const patterns = {
-      youku: /[^"'\s]+(https?:\/\/v\.youku\.com\/v_show\/[^"'\s]+\.html)/g,
-      iqiyi: /[^"'\s]+(https?:\/\/www\.iqiyi\.com\/v_[^"'\s]+\.html)/g,
-      qq: /[^"'\s]+(https?:\/\/v\.qq\.com\/x\/cover\/[^"'\s]+\.html)/g,
-      mgtv: /[^"'\s]+(https?:\/\/www\.mgtv\.com\/[^"'\s]+\.html)/g,
-      bilibili: /[^"'\s]+(https?:\/\/www\.bilibili\.com\/[^"'\s]+)/g
-    }
-
-    // 使用所有模式匹配
-    Object.entries(patterns).forEach(([platform, pattern]) => {
-      const matches = html.matchAll(pattern) || []
-      for (const match of matches) {
-        const url = match[1].trim()
-        if (!platformUrls[platform].includes(url)) {
-          platformUrls[platform].push(url)
-        }
-      }
-    })
-
-    // 转换为平台和分集数组格式
-    const platformEpisodes = Object.entries(platformUrls)
-      .filter(([_, urls]) => urls.length > 0)
-      .map(([platform, urls]) => ({
-        platform,
-        episodes: urls.map(url => `${parseApiService.getParseApi()}${encodeURIComponent(url)}`)
-      }))
-
-    if (platformEpisodes.length === 0) {
-      return {
-        code: 404,
-        msg: '未找到有效的播放地址',
-        urllist: []
-      }
-    }
-
-    return {
-      code: 200,
-      urllist: platformEpisodes
-    }
-  } catch (error) {
-    console.error('解析详情页失败:', error)
-    return {
-      code: 400,
-      msg: '解析详情页失败',
-      raw: html,
-      error: error.message,
-      urllist: []
-    }
-  }
-}
-
 // 历史记录服务
 const historyService = {
   // 添加或更新历史记录
@@ -651,8 +676,9 @@ const historyService = {
       platform: video.platform || '',
       episodeIndex: typeof video.episodeIndex === 'number' ? video.episodeIndex : 0,
       episodeUrl: video.episodeUrl || '',
-      lastTime: typeof video.lastTime === 'number' ? video.lastTime : 0,
-      updateTime: Date.now()
+      episodes: Array.isArray(video.episodes) ? video.episodes : [],
+      updateTime: Date.now(),
+      keyword: video.keyword || ''
     };
 
     if (index > -1) {
@@ -686,12 +712,11 @@ const historyService = {
     window.utools.dbStorage.setItem('histories', []);
   },
 
-  // 更新观看进度和分集
-  updateProgress: (vod_id, sourceId, lastTime, episodeIndex, episodeUrl) => {
+  // 更新观看分集
+  updateProgress: (vod_id, sourceId, episodeIndex, episodeUrl) => {
     const histories = window.utools.dbStorage.getItem('histories') || [];
     const index = histories.findIndex(h => h.vod_id === vod_id && h.sourceId === sourceId);
     if (index > -1) {
-      if (typeof lastTime === 'number') histories[index].lastTime = lastTime;
       if (typeof episodeIndex === 'number') histories[index].episodeIndex = episodeIndex;
       if (episodeUrl) histories[index].episodeUrl = episodeUrl;
       histories[index].updateTime = Date.now();
@@ -700,33 +725,36 @@ const historyService = {
   }
 };
 
-// 监听 uTools 事件
-window.utools.onPluginEnter(({ code, type, payload }) => {
-  // 根据不同的功能代码跳转到不同的页面
-  switch (code) {
-    case 'tv-search':
-      if (type === 'over') {
-        // 当是直接输入剧名时，将关键词作为参数传递
-        window.location.hash = `/search?keyword=${encodeURIComponent(payload)}`
-      } else {
-        // 其他情况保持原有逻辑
-        window.location.hash = '/search'
-      }
-      break
-    case 'tv-history':
-      window.location.hash = '/history'
-      break
-    case 'tv-settings':
-      window.location.hash = '/settings'
-      break
+// 启动时初始化 dbStorage 关键字段
+function ensureDbStorageInit() {
+  if (!window.utools.dbStorage.getItem('sources')) {
+    window.utools.dbStorage.setItem('sources', []);
   }
-})
+  if (!window.utools.dbStorage.getItem('histories')) {
+    window.utools.dbStorage.setItem('histories', []);
+  }
+  if (!window.utools.dbStorage.getItem('theme')) {
+    window.utools.dbStorage.setItem('theme', 'light');
+  }
+  if (!window.utools.dbStorage.getItem('parseApi')) {
+    window.utools.dbStorage.setItem('parseApi', 'https://jx.xmflv.com/?url=');
+  }
+}
 
-window.services = {
+// 保证初始化在 services 挂载前执行
+ensureDbStorageInit();
+
+// 修改导出方式
+module.exports = {
   video: videoService,
   theme: themeService,
   history: historyService,
   parseApi: parseApiService
+}
+
+// 为了保持向后兼容，同时设置到 window 对象
+if (typeof window !== 'undefined') {
+  window.services = module.exports
 }
 
 

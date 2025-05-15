@@ -9,5 +9,5 @@
   "include": [
     "src/**/*.vue",
     "src/**/*.js"
-  ]
+, "src/views/Player.vue"  ]
 }
